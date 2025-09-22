@@ -1,65 +1,111 @@
+# main.py
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from typing import List
 import pandas as pd
+import numpy as np
 import joblib
-from datetime import datetime
+from sklearn.preprocessing import OneHotEncoder
 
-# Load your trained average model
+# ----------------------------
+# Step 0: Load trained models and encoders
+# ----------------------------
 model_avg = joblib.load("model_avg.pkl")
+model_min = joblib.load("model_min.pkl")
+model_max = joblib.load("model_max.pkl")
+enc = joblib.load("symbol_encoder.pkl")  # OneHotEncoder for 'Symbol'
 
-app = FastAPI(title="Stock Average Price Prediction API")
+# List of numeric features used in training (except targets)
+numeric_features = joblib.load("numeric_features.pkl")  # Save this during training
+feature_columns = joblib.load("feature_columns.pkl")    # X_full.columns during training
 
-# Request body
-class StockRawRequest(BaseModel):
-    c: float     # Close
-    d: str       # Symbol
-    dp: float = 0.0
-    h: float     # High
-    l: float     # Low
-    o: float     # Open
-    pc: float    # Previous close
-    t: str = None  # Optional date
+# ----------------------------
+# Step 1: Define FastAPI app
+# ----------------------------
+app = FastAPI(
+    title="Stock Price Prediction API",
+    description="Predict future average, min, and max stock prices based on historical data",
+    version="1.0"
+)
 
-# Prepare features for prediction
-def convert_to_model_input(data: StockRawRequest):
-    # Use provided date or today
-    date = pd.to_datetime(data.t) if data.t else pd.to_datetime(datetime.today().date())
-    
+# ----------------------------
+# Step 2: Input data model
+# ----------------------------
+class StockInput(BaseModel):
+    Symbol: str
+    Date: str  # format: 'YYYY-MM-DD'
+    Open: float
+    High: float
+    Low: float
+    Close: float
+    Volume: float
+    # You can add other numeric columns if your model uses more
+
+class StockBatchInput(BaseModel):
+    data: List[StockInput]
+
+# ----------------------------
+# Step 3: Helper function to prepare features
+# ----------------------------
+def prepare_features(df: pd.DataFrame):
     # Date features
-    df_date = pd.DataFrame([{
-        'day_of_week': date.dayofweek,
-        'month': date.month,
-        'quarter': date.quarter,
-        'day_of_month': date.day,
-        'year': date.year
-    }])
-    
-    # Numeric features
-    df_numeric = pd.DataFrame([{
-        'Open': data.o,
-        'High': data.h,
-        'Low': data.l,
-        'Close': data.c,
-        'PrevClose': data.pc,
-        'DailyPct': data.dp
-    }])
-    
-    # Combine numeric + date features
-    X_final = pd.concat([df_numeric.reset_index(drop=True), df_date.reset_index(drop=True)], axis=1)
-    
-    return X_final
+    df['Date'] = pd.to_datetime(df['Date'])
+    df['day_of_week'] = df['Date'].dt.dayofweek
+    df['month'] = df['Date'].dt.month
+    df['quarter'] = df['Date'].dt.quarter
+    df['day_of_month'] = df['Date'].dt.day
+    df['year'] = df['Date'].dt.year
 
-# Prediction endpoint
+    # Numeric features
+    X_num = df[numeric_features].copy()
+
+    # Encode Symbol
+    symbol_encoded = enc.transform(df[['Symbol']])
+    symbol_df = pd.DataFrame(symbol_encoded, columns=enc.get_feature_names_out(['Symbol']))
+    symbol_df.index = df.index
+
+    # Combine all features
+    X_full = pd.concat([X_num, symbol_df], axis=1)
+
+    # Align with training columns
+    X_full = X_full.reindex(columns=feature_columns, fill_value=0)
+    return X_full
+
+# ----------------------------
+# Step 4: Prediction endpoint
+# ----------------------------
 @app.post("/predict")
-def predict_stock_raw(request: StockRawRequest):
+def predict_stock(batch_input: StockBatchInput):
     try:
-        X = convert_to_model_input(request)
-        pred_avg = model_avg.predict(X)[0]
-        
-        return {
-            "symbol": request.d,
-            "date": str(pd.to_datetime(request.t) if request.t else datetime.today().date()),
-            "predicted_avg": round(float(pred_avg), 2)
-        }
+        # Convert input list to DataFrame
+        input_df = pd.DataFrame([item.dict() for item in batch_input.data])
+
+        # Prepare features
+        X = prepare_features(input_df)
+
+        # Predict
+        pred_avg = model_avg.predict(X)
+        pred_min = model_min.predict(X)
+        pred_max = model_max.predict(X)
+
+        # Return predictions
+        results = []
+        for i in range(len(input_df)):
+            results.append({
+                "Symbol": input_df.loc[i, "Symbol"],
+                "Date": input_df.loc[i, "Date"].strftime('%Y-%m-%d'),
+                "pred_avg": float(pred_avg[i]),
+                "pred_min": float(pred_min[i]),
+                "pred_max": float(pred_max[i])
+            })
+        return {"predictions": results}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ----------------------------
+# Step 5: Root endpoint
+# ----------------------------
+@app.get("/")
+def root():
+    return {"message": "Welcome to the Stock Price Prediction API!"}
