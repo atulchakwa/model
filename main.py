@@ -4,20 +4,12 @@ import pandas as pd
 import joblib
 from datetime import datetime
 
-# ---------------------------
-# Load trained model & encoder
-# ---------------------------
-model_avg = joblib.load("model_avg.pkl")        # Your trained average price model
-symbol_encoder = joblib.load("symbol_encoder.pkl")  # Your OneHotEncoder
+# Load your trained average model
+model_avg = joblib.load("model_avg.pkl")
 
-# ---------------------------
-# FastAPI app
-# ---------------------------
 app = FastAPI(title="Stock Average Price Prediction API")
 
-# ---------------------------
 # Request body
-# ---------------------------
 class StockRawRequest(BaseModel):
     c: float     # Close
     d: str       # Symbol
@@ -26,12 +18,10 @@ class StockRawRequest(BaseModel):
     l: float     # Low
     o: float     # Open
     pc: float    # Previous close
-    t: str = None  # Optional date (YYYY-MM-DD). If not provided, use today
+    t: str = None  # Optional date
 
-# ---------------------------
-# Convert raw input to model features
-# ---------------------------
-def convert_to_model_input(data: StockRawRequest, symbol_encoder, numeric_features):
+# Prepare features for prediction
+def convert_to_model_input(data: StockRawRequest):
     # Use provided date or today
     date = pd.to_datetime(data.t) if data.t else pd.to_datetime(datetime.today().date())
     
@@ -44,7 +34,7 @@ def convert_to_model_input(data: StockRawRequest, symbol_encoder, numeric_featur
         'year': date.year
     }])
     
-    # Numeric features from input
+    # Numeric features
     df_numeric = pd.DataFrame([{
         'Open': data.o,
         'High': data.h,
@@ -54,33 +44,16 @@ def convert_to_model_input(data: StockRawRequest, symbol_encoder, numeric_featur
         'DailyPct': data.dp
     }])
     
-    # Encode symbol
-    symbol_df = pd.DataFrame(symbol_encoder.transform([[data.d]]), 
-                             columns=symbol_encoder.get_feature_names_out(['Symbol']))
-    
-    # Combine all features
-    X_final = pd.concat([df_numeric.reset_index(drop=True), 
-                         df_date.reset_index(drop=True), 
-                         symbol_df.reset_index(drop=True)], axis=1)
-    
-    # Ensure numeric_features order matches training
-    X_final = X_final[numeric_features + list(symbol_df.columns) + list(df_date.columns)]
+    # Combine numeric + date features
+    X_final = pd.concat([df_numeric.reset_index(drop=True), df_date.reset_index(drop=True)], axis=1)
     
     return X_final
 
-# ---------------------------
 # Prediction endpoint
-# ---------------------------
 @app.post("/predict")
 def predict_stock_raw(request: StockRawRequest):
     try:
-        # Numeric features used in your model
-        numeric_features = ['Open','High','Low','Close','PrevClose','DailyPct']  # adjust to your model
-        
-        # Convert raw input to model features
-        X = convert_to_model_input(request, symbol_encoder, numeric_features)
-        
-        # Predict average price
+        X = convert_to_model_input(request)
         pred_avg = model_avg.predict(X)[0]
         
         return {
