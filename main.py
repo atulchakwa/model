@@ -5,26 +5,21 @@ from typing import List
 import pandas as pd
 import numpy as np
 import joblib
-from sklearn.preprocessing import OneHotEncoder
 
 # ----------------------------
-# Step 0: Load trained models and encoders
+# Step 0: Load trained model and encoder
 # ----------------------------
 model_avg = joblib.load("model_avg.pkl")
-model_min = joblib.load("model_min.pkl")
-model_max = joblib.load("model_max.pkl")
 enc = joblib.load("symbol_encoder.pkl")  # OneHotEncoder for 'Symbol'
-
-# List of numeric features used in training (except targets)
-numeric_features = joblib.load("numeric_features.pkl")  # Save this during training
+numeric_features = joblib.load("numeric_features.pkl")  # numeric columns used in training
 feature_columns = joblib.load("feature_columns.pkl")    # X_full.columns during training
 
 # ----------------------------
-# Step 1: Define FastAPI app
+# Step 1: FastAPI app
 # ----------------------------
 app = FastAPI(
-    title="Stock Price Prediction API",
-    description="Predict future average, min, and max stock prices based on historical data",
+    title="Stock Average Price Prediction API",
+    description="Predict future average stock prices",
     version="1.0"
 )
 
@@ -39,13 +34,12 @@ class StockInput(BaseModel):
     Low: float
     Close: float
     Volume: float
-    # You can add other numeric columns if your model uses more
 
 class StockBatchInput(BaseModel):
     data: List[StockInput]
 
 # ----------------------------
-# Step 3: Helper function to prepare features
+# Step 3: Prepare features
 # ----------------------------
 def prepare_features(df: pd.DataFrame):
     # Date features
@@ -64,7 +58,7 @@ def prepare_features(df: pd.DataFrame):
     symbol_df = pd.DataFrame(symbol_encoded, columns=enc.get_feature_names_out(['Symbol']))
     symbol_df.index = df.index
 
-    # Combine all features
+    # Combine features
     X_full = pd.concat([X_num, symbol_df], axis=1)
 
     # Align with training columns
@@ -77,16 +71,14 @@ def prepare_features(df: pd.DataFrame):
 @app.post("/predict")
 def predict_stock(batch_input: StockBatchInput):
     try:
-        # Convert input list to DataFrame
+        # Convert input to DataFrame
         input_df = pd.DataFrame([item.dict() for item in batch_input.data])
 
         # Prepare features
         X = prepare_features(input_df)
 
-        # Predict
+        # Predict average price
         pred_avg = model_avg.predict(X)
-        pred_min = model_min.predict(X)
-        pred_max = model_max.predict(X)
 
         # Return predictions
         results = []
@@ -94,9 +86,7 @@ def predict_stock(batch_input: StockBatchInput):
             results.append({
                 "Symbol": input_df.loc[i, "Symbol"],
                 "Date": input_df.loc[i, "Date"].strftime('%Y-%m-%d'),
-                "pred_avg": float(pred_avg[i]),
-                "pred_min": float(pred_min[i]),
-                "pred_max": float(pred_max[i])
+                "pred_avg": float(pred_avg[i])
             })
         return {"predictions": results}
 
@@ -108,4 +98,4 @@ def predict_stock(batch_input: StockBatchInput):
 # ----------------------------
 @app.get("/")
 def root():
-    return {"message": "Welcome to the Stock Price Prediction API!"}
+    return {"message": "Welcome to the Stock Average Price Prediction API!"}
