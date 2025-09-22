@@ -4,46 +4,88 @@ import pandas as pd
 import joblib
 from datetime import datetime
 
-# Load the trained average model and symbol encoder
-model_avg = joblib.load("model_avg.pkl")
-symbol_encoder = joblib.load("symbol_encoder.pkl")
+# ---------------------------
+# Load trained model & encoder
+# ---------------------------
+model_avg = joblib.load("model_avg.pkl")        # Your trained average price model
+symbol_encoder = joblib.load("symbol_encoder.pkl")  # Your OneHotEncoder
 
+# ---------------------------
+# FastAPI app
+# ---------------------------
 app = FastAPI(title="Stock Average Price Prediction API")
 
-# Request body only needs symbol
-class StockRequest(BaseModel):
-    symbol: str
+# ---------------------------
+# Request body
+# ---------------------------
+class StockRawRequest(BaseModel):
+    c: float     # Close
+    d: str       # Symbol
+    dp: float = 0.0
+    h: float     # High
+    l: float     # Low
+    o: float     # Open
+    pc: float    # Previous close
+    t: str = None  # Optional date (YYYY-MM-DD). If not provided, use today
 
-# Prepare features for prediction using today's date
-def prepare_features(symbol: str):
-    today = pd.to_datetime(datetime.today().date())  # today's date
-    
-    # Encode symbol
-    symbol_df = pd.DataFrame(symbol_encoder.transform([[symbol]]), 
-                             columns=symbol_encoder.get_feature_names_out(['Symbol']))
+# ---------------------------
+# Convert raw input to model features
+# ---------------------------
+def convert_to_model_input(data: StockRawRequest, symbol_encoder, numeric_features):
+    # Use provided date or today
+    date = pd.to_datetime(data.t) if data.t else pd.to_datetime(datetime.today().date())
     
     # Date features
-    X = pd.DataFrame([{
-        'day_of_week': today.dayofweek,
-        'month': today.month,
-        'quarter': today.quarter,
-        'day_of_month': today.day,
-        'year': today.year
+    df_date = pd.DataFrame([{
+        'day_of_week': date.dayofweek,
+        'month': date.month,
+        'quarter': date.quarter,
+        'day_of_month': date.day,
+        'year': date.year
     }])
     
-    # Combine with symbol one-hot
-    X_final = pd.concat([X.reset_index(drop=True), symbol_df.reset_index(drop=True)], axis=1)
+    # Numeric features from input
+    df_numeric = pd.DataFrame([{
+        'Open': data.o,
+        'High': data.h,
+        'Low': data.l,
+        'Close': data.c,
+        'PrevClose': data.pc,
+        'DailyPct': data.dp
+    }])
+    
+    # Encode symbol
+    symbol_df = pd.DataFrame(symbol_encoder.transform([[data.d]]), 
+                             columns=symbol_encoder.get_feature_names_out(['Symbol']))
+    
+    # Combine all features
+    X_final = pd.concat([df_numeric.reset_index(drop=True), 
+                         df_date.reset_index(drop=True), 
+                         symbol_df.reset_index(drop=True)], axis=1)
+    
+    # Ensure numeric_features order matches training
+    X_final = X_final[numeric_features + list(symbol_df.columns) + list(df_date.columns)]
+    
     return X_final
 
+# ---------------------------
 # Prediction endpoint
+# ---------------------------
 @app.post("/predict")
-def predict_stock(request: StockRequest):
+def predict_stock_raw(request: StockRawRequest):
     try:
-        X = prepare_features(request.symbol)
+        # Numeric features used in your model
+        numeric_features = ['Open','High','Low','Close','PrevClose','DailyPct']  # adjust to your model
+        
+        # Convert raw input to model features
+        X = convert_to_model_input(request, symbol_encoder, numeric_features)
+        
+        # Predict average price
         pred_avg = model_avg.predict(X)[0]
+        
         return {
-            "symbol": request.symbol,
-            "date": str(datetime.today().date()),  # return today’s date
+            "symbol": request.d,
+            "date": str(pd.to_datetime(request.t) if request.t else datetime.today().date()),
             "predicted_avg": round(float(pred_avg), 2)
         }
     except Exception as e:
